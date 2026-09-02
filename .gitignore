@@ -1,1 +1,5 @@
 target/
+
+# Produced by `zed: install dev extension`
+editors/zed/extension.wasm
+editors/zed/grammars/
