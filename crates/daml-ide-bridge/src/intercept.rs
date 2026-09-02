@@ -33,8 +33,18 @@ pub enum Outbound {
 #[derive(Debug, Clone)]
 enum Pending {
     Initialize,
-    CodeLens { document: String },
-    CodeAction { document: String, range: Value },
+    CodeLens {
+        document: String,
+    },
+    /// A lens request the bridge made on its own behalf. The editor never asked
+    /// for it, so the response is cached and dropped rather than forwarded.
+    InternalCodeLens {
+        document: String,
+    },
+    CodeAction {
+        document: String,
+        range: Value,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +53,7 @@ pub struct Interceptor {
     /// Code lenses per document, kept so code actions can be synthesised from
     /// them. Zed's code lens support is opt-in; code actions always work.
     lenses: HashMap<String, Vec<Value>>,
+    next_request: u64,
 }
 
 impl Interceptor {
@@ -71,6 +82,17 @@ impl Interceptor {
             return out;
         }
 
+        // Zed only sends textDocument/codeLens when the user turned code lenses
+        // on, so without asking for them the bridge would never have anything
+        // to build a code action from.
+        let refresh = match method {
+            "textDocument/didOpen" | "textDocument/didSave" | "textDocument/codeAction" => {
+                let document = document_of(&msg);
+                is_daml_source(&document).then_some(document)
+            }
+            _ => None,
+        };
+
         if let Some(id) = id_key(&msg) {
             let pending = match method {
                 "initialize" => Some(Pending::Initialize),
@@ -88,7 +110,32 @@ impl Interceptor {
             }
         }
 
-        vec![Outbound::ToServer(msg)]
+        let mut out = vec![Outbound::ToServer(msg)];
+        if let Some(document) = refresh {
+            out.push(Outbound::ToServer(self.request_lenses(&document)));
+        }
+        out
+    }
+
+    /// Ask the server for this document's code lenses on the bridge's own
+    /// behalf. Ranges go stale as the file is edited, and the first request can
+    /// land before the package has compiled, so this is repeated rather than
+    /// done once.
+    fn request_lenses(&mut self, document: &str) -> Value {
+        self.next_request += 1;
+        let id = format!("daml-ide-bridge/{}", self.next_request);
+        self.pending.insert(
+            id.clone(),
+            Pending::InternalCodeLens {
+                document: document.to_string(),
+            },
+        );
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "textDocument/codeLens",
+            "params": {"textDocument": {"uri": document}},
+        })
     }
 
     pub fn on_server_message(&mut self, msg: Value) -> Vec<Outbound> {
@@ -127,15 +174,28 @@ impl Interceptor {
         match pending {
             Pending::Initialize => advertise_command(&mut msg),
             Pending::CodeLens { document } => {
-                if let Some(lenses) = msg["result"].as_array() {
-                    self.lenses.insert(document, lenses.clone());
-                }
+                self.remember_lenses(document, &msg);
+            }
+            Pending::InternalCodeLens { document } => {
+                self.remember_lenses(document, &msg);
+                return Vec::new();
             }
             Pending::CodeAction { document, range } => {
                 self.inject_actions(&mut msg, &document, &range)
             }
         }
         vec![Outbound::ToClient(msg)]
+    }
+
+    /// An empty result means the package has not compiled yet; keeping the
+    /// previous lenses is better than forgetting them.
+    fn remember_lenses(&mut self, document: String, msg: &Value) {
+        match msg["result"].as_array() {
+            Some(lenses) if !lenses.is_empty() => {
+                self.lenses.insert(document, lenses.clone());
+            }
+            _ => {}
+        }
     }
 
     fn inject_actions(&self, msg: &mut Value, document: &str, range: &Value) {
@@ -167,6 +227,12 @@ fn id_key(msg: &Value) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         _ => None,
     }
+}
+
+/// Only real Daml sources have script results; the `daml://` virtual resources
+/// the bridge itself opens must not trigger another round of requests.
+fn is_daml_source(uri: &str) -> bool {
+    uri.starts_with("file://") && uri.ends_with(".daml")
 }
 
 fn document_of(msg: &Value) -> String {
@@ -217,6 +283,119 @@ mod tests {
                 "arguments": ["Script: setup", "daml://compiler?file=%2Fa.daml&top-level-decl=setup"]
             }
         })
+    }
+
+    #[test]
+    fn primes_the_lens_cache_when_a_daml_file_is_opened() {
+        // Zed only asks for code lenses when the user opted into them, so the
+        // bridge has to fetch them itself or it has nothing to build an action
+        // from.
+        let mut i = Interceptor::default();
+        let out = i.on_client_message(json!({
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": "file:///a.daml", "text": ""}}
+        }));
+        let requests: Vec<&Value> = out
+            .iter()
+            .filter_map(|o| match o {
+                Outbound::ToServer(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), 2, "{out:?}");
+        assert_eq!(requests[1]["method"], "textDocument/codeLens");
+        assert_eq!(
+            requests[1]["params"]["textDocument"]["uri"],
+            "file:///a.daml"
+        );
+    }
+
+    #[test]
+    fn does_not_prime_for_documents_that_are_not_daml_sources() {
+        let mut i = Interceptor::default();
+        for uri in ["file:///a.txt", "daml://compiler?x=1"] {
+            let out = i.on_client_message(json!({
+                "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "text": ""}}
+            }));
+            assert_eq!(out.len(), 1, "{uri} should just be forwarded: {out:?}");
+        }
+    }
+
+    #[test]
+    fn its_own_lens_response_is_cached_and_not_forwarded() {
+        let mut i = Interceptor::default();
+        let out = i.on_client_message(json!({
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": "file:///a.daml", "text": ""}}
+        }));
+        let Outbound::ToServer(request) = &out[1] else {
+            panic!("{out:?}")
+        };
+        let id = request["id"].clone();
+
+        let out = i.on_server_message(json!({"id": id, "result": [lens()]}));
+        assert!(out.is_empty(), "the editor never asked for this: {out:?}");
+
+        // And the cache is now good enough to answer a code action.
+        i.on_client_message(json!({"id": 3, "method": "textDocument/codeAction",
+                                   "params": {"textDocument": {"uri": "file:///a.daml"},
+                                              "range": {"start": {"line": 7, "character": 0},
+                                                        "end": {"line": 7, "character": 0}}}}));
+        let out = i.on_server_message(json!({"id": 3, "result": []}));
+        let Outbound::ToClient(msg) = out
+            .iter()
+            .find(|o| matches!(o, Outbound::ToClient(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            msg["result"][0]["title"],
+            "Show script results: Script: setup"
+        );
+    }
+
+    #[test]
+    fn every_code_action_refreshes_the_lenses() {
+        // Lens ranges go stale as the file is edited, and the first fetch can
+        // land before the package compiles, so ask again each time.
+        let mut i = Interceptor::default();
+        let out = i.on_client_message(json!({"id": 3, "method": "textDocument/codeAction",
+                                             "params": {"textDocument": {"uri": "file:///a.daml"},
+                                                        "range": {"start": {"line": 1, "character": 0},
+                                                                  "end": {"line": 1, "character": 0}}}}));
+        let methods: Vec<&str> = out
+            .iter()
+            .filter_map(|o| match o {
+                Outbound::ToServer(m) => m["method"].as_str(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            methods,
+            vec!["textDocument/codeAction", "textDocument/codeLens"]
+        );
+    }
+
+    #[test]
+    fn saving_refreshes_the_lenses() {
+        let mut i = Interceptor::default();
+        let out = i.on_client_message(json!({
+            "method": "textDocument/didSave",
+            "params": {"textDocument": {"uri": "file:///a.daml"}}
+        }));
+        let methods: Vec<&str> = out
+            .iter()
+            .filter_map(|o| match o {
+                Outbound::ToServer(m) => m["method"].as_str(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            methods,
+            vec!["textDocument/didSave", "textDocument/codeLens"]
+        );
     }
 
     #[test]
