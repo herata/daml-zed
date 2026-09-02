@@ -34,6 +34,11 @@ impl LogLevel {
 pub struct ServerSettings {
     pub log_level: LogLevel,
     pub extra_arguments: Vec<String>,
+    /// Evaluate every Daml Script when a file is opened, so a failing script
+    /// shows up as a diagnostic instead of staying silent until `dpm test`.
+    /// Off by default, as in the VS Code extension: it costs a full evaluation
+    /// of every script in the file on every open.
+    pub autorun_scripts: bool,
     /// Proxy the language server through daml-ide-bridge, which serves script
     /// results to a browser. Zed cannot render them itself.
     pub script_results: bool,
@@ -47,6 +52,7 @@ impl Default for ServerSettings {
         Self {
             log_level: LogLevel::default(),
             extra_arguments: Vec::new(),
+            autorun_scripts: false,
             // Deriving Default would turn this off, which is not the intent.
             script_results: true,
             bridge_path: None,
@@ -85,6 +91,12 @@ pub fn build_args(settings: &ServerSettings) -> Vec<String> {
         "--telemetry-ignored".to_string(),
         format!("--log-level={}", settings.log_level.as_str()),
     ];
+    if settings.autorun_scripts {
+        // The flag damlc still expects; the VS Code extension passes the same
+        // one and notes that the newer `-all-scripts` spelling is not yet safe
+        // to rely on across supported SDKs.
+        args.push("--studio-auto-run-all-scenarios=yes".to_string());
+    }
     args.extend(settings.extra_arguments.iter().cloned());
     args
 }
@@ -144,6 +156,22 @@ mod tests {
             ..Default::default()
         };
         assert!(build_args(&settings).contains(&"--log-level=Debug".to_string()));
+    }
+
+    #[test]
+    fn autorun_is_off_by_default() {
+        assert!(!build_args(&ServerSettings::default())
+            .iter()
+            .any(|a| a.contains("auto-run")));
+    }
+
+    #[test]
+    fn autorun_turns_script_failures_into_diagnostics() {
+        let settings = ServerSettings {
+            autorun_scripts: true,
+            ..Default::default()
+        };
+        assert!(build_args(&settings).contains(&"--studio-auto-run-all-scenarios=yes".to_string()));
     }
 
     #[test]

@@ -13,9 +13,38 @@ projects.
 The outline (`cmd-shift-o`) lists templates, choices, interfaces, interface
 instances and exceptions, which is how a Daml file is usually navigated.
 
+## Failing scripts
+
+Turn on `autorun_scripts` and every Daml `Script` is evaluated when you open the
+file, so a failure becomes an ordinary red squiggle on the declaration:
+
+```
+Script execution failed on commit at Test:24:12:
+  Attempt to fetch or exercise a contract not visible to the reading parties.
+  Contract: #0:0 (Main:Asset@37a33fb2…)
+  actAs: 'Bob'
+  Disclosed to: 'Alice'
+
+Committed transactions:
+  TX 0 1970-01-01T00:00:00Z (Test:18:14)
+  #0:0
+  └─> 'Alice' creates Main:Asset@37a33fb2… with issuer = 'Alice'; …
+```
+
+The reason, the transactions committed before the failure and the disclosure
+are all in the diagnostic. No sidecar involved. It is off by default because it
+costs a full evaluation of every script in the file each time it is opened.
+
 ## Script results
 
-They work, in an editor pane rather than a webview.
+
+Script results answer a different question from the one above: not *did it
+pass* but *what did it actually do*. A passing script produces a transaction
+tree and a table of who ends up seeing which contract, and neither
+`dpm test` nor a diagnostic shows you that. If you only need pass or fail,
+`autorun_scripts` is enough and you can skip the rest of this section.
+
+They render in an editor pane rather than a webview.
 
 Invoke the **Show script results** code action on a Daml `Script`. The result is
 written to `.daml/ide/script-results.md`; open that file once, split beside your
@@ -113,6 +142,7 @@ rustup target add wasm32-wasip2
 | --- | --- | --- | --- |
 | `log_level` | `Debug`, `Info`, `Warning`, `Error` | `Warning` | Passed to `damlc multi-ide` as `--log-level` |
 | `extra_arguments` | list of strings | `[]` | Appended to the `damlc multi-ide` command line |
+| `autorun_scripts` | bool | `false` | Evaluate every script on open, so failures appear as diagnostics |
 | `script_results` | bool | `true` | Run the language server behind `daml-ide-bridge` when one is available |
 | `bridge_path` | string | unset | Where to find `daml-ide-bridge`, if not on `PATH` |
 | `bridge_args` | list of strings | `[]` | Passed to the bridge, e.g. `["--log", "/tmp/bridge.log"]` |
