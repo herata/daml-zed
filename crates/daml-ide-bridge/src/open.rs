@@ -1,8 +1,12 @@
 //! Opening a URL in the user's browser.
 
+use std::io;
 use std::process::{Command, Stdio};
 
-pub fn url(url: &str) {
+/// Waits for the launcher to exit, which is immediate, so the caller can report
+/// whether it worked. A browser that silently fails to appear is the hardest
+/// kind of failure to diagnose from the editor.
+pub fn url(url: &str) -> io::Result<()> {
     let mut command = if cfg!(target_os = "macos") {
         let mut c = Command::new("open");
         c.arg(url);
@@ -16,10 +20,17 @@ pub fn url(url: &str) {
         c.arg(url);
         c
     };
-    // Failing to open a browser is not fatal: the URL is on stderr anyway.
-    let _ = command
+    let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()?
+        .wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "the browser launcher exited with {status}"
+        )))
+    }
 }

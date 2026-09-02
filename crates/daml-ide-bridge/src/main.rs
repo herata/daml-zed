@@ -176,8 +176,23 @@ fn dispatch(outbound: Vec<Outbound>, ctx: &Context) {
                 }
                 let url = format!("{}/r/{id}?token={}", ctx.base, ctx.token);
                 eprintln!("daml-ide-bridge: {title} -> {url}");
+                if first {
+                    // The editor is the one place the user is certainly
+                    // looking, and it is the only reliable way to hand them the
+                    // URL when the browser does not come to the front.
+                    let _ = ctx.to_client.send(json!({
+                        "jsonrpc": "2.0",
+                        "method": "window/showMessage",
+                        "params": {"type": 3, "message": format!("{title}: {url}")}
+                    }));
+                }
                 if ctx.auto_open && first {
-                    open::url(&url);
+                    match open::url(&url) {
+                        Ok(()) => log::line(&format!("opened browser: {url}")),
+                        Err(e) => log::line(&format!("could not open a browser ({e}): {url}")),
+                    }
+                } else {
+                    log::line(&format!("not opening a browser: {url}"));
                 }
             }
             Outbound::ResourceChanged { uri, contents } => {
