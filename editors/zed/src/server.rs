@@ -29,8 +29,11 @@ impl LogLevel {
 }
 
 /// User settings read from `lsp."daml-language-server".settings`.
+/// Unknown keys are ignored rather than rejected. Rejecting them fails the
+/// whole deserialization, which would quietly reset every other setting too -
+/// a typo in one key should not silently turn off the others.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ServerSettings {
     pub log_level: LogLevel,
     pub extra_arguments: Vec<String>,
@@ -274,6 +277,15 @@ mod tests {
         let settings = ServerSettings::from_json(Some(value));
         assert_eq!(settings.log_level, LogLevel::Error);
         assert_eq!(settings.extra_arguments, vec!["--ghc-option", "-Wall"]);
+    }
+
+    #[test]
+    fn a_typo_in_one_key_leaves_the_others_alone() {
+        let settings = ServerSettings::from_json(Some(serde_json::json!({
+            "autorun_scripts": true,
+            "autorun_scripts_typo": true,
+        })));
+        assert!(settings.autorun_scripts);
     }
 
     #[test]
