@@ -136,7 +136,8 @@ damlc（GHC フォーク）が Haskell に追加している範囲のみ。
   / `interface instance`
 - **choice 宣言**: `choice C : R with <fields> controller <exprs> do`、
   修飾子 `nonconsuming` / `preconsuming` / `postconsuming`。
-  `observer` 句は `controller` の**前後どちらにも**置ける
+  `observer` 句は `controller` の**前にのみ**置ける（damlc 3.5.7 で確認。
+  後置は parse error になる）
 - **interface 宣言**: `interface I where`、`viewtype`、
   `interface instance I for T where`
 - `create` / `exercise` / `fetch` / `archive` は通常の関数適用であり文法追加は不要。
@@ -144,10 +145,33 @@ damlc（GHC フォーク）が Haskell に追加している範囲のみ。
 
 ### 5.3 上流追従を安く保つための制約
 
-- レイアウト規則を扱う `src/scanner.c`、および式・型・パターン・モジュール系の
-  既存規則には**触らない**
 - Daml 固有の規則は `grammar/daml.js` に隔離する
-- 上流ファイルへの差分は「宣言の `choice` に daml 規則を足す」程度に抑える
+- 上流ファイルへの差分は最小限に抑える
+
+**実装で判明した例外（当初の想定を修正）**: 「`src/scanner.c` には触らない」は
+成立しなかった。Daml は Haskell と `:` / `::` の意味が逆で、型注釈が `:`、cons が
+`::` である（Daml stdlib で確認: 単一コロンの型注釈 494 箇所、`::` の型注釈 0 箇所、
+`::` の出現 105 箇所はすべて cons）。これは語彙レベルの差分なのでスキャナを直す以外に
+手段がない。結果として上流ファイルへの変更は次に限定した。
+
+| ファイル | 変更 |
+|---|---|
+| `src/scanner.c` | `:` を予約語化、`::` を consym 化、コンストラクタ先読みの反転、Daml `with` 専用のレイアウト種別、`catch` によるレイアウト終端 |
+| `grammar/lexeme.js` | `_colon2` を `:` に |
+| `grammar/module.js` | `declaration` に `template` / `interface` / `exception` を追加 |
+| `grammar/data.js` `grammar/exp.js` `grammar/pat.js` | `with` レコードと `;` 区切りの登録（各1〜2行） |
+| `grammar/precedences.js` `grammar/conflicts.js` | `daml-clause` の優先度 |
+
+`test/corpus` の Haskell コーパスは `script/swap-colons.py` で Daml 構文に機械変換した。
+
+### 5.3.1 Daml `with` ブロックにレイアウト種別が必要な理由
+
+`with` ブロックは他のどのレイアウトとも終端条件が違う。括弧の中では `=` と `,` が
+他のレイアウトを終端するが、`with` ブロックではどちらもフィールドの一部である
+（damlc は `(P with a = 1, b = 2)` を1つのレコードとして受理し、
+`(P with a = 1, 2)` を拒否する）。一方で単一の `:` は終端する
+（`key K with a; b : KeyType` は key 式への型注釈）。この違いを表現するために
+`DamlLayout` という専用の ContextSort をスキャナに追加した。
 
 ### 5.4 クエリの置き場所
 
@@ -160,8 +184,13 @@ Zed が読むのは拡張リポジトリ側の `editors/zed/languages/daml/*.scm
 1. **コーパステスト**: `test/corpus/daml/*.txt` に Daml 固有構文を網羅
 2. **バージョン追従テスト**: CI で `digital-asset/daml` と `daml-finance` を
    shallow clone し、全 `.daml` をパースして `ERROR` / `MISSING` ノードが
-   0 件であることを検証。SDK のバージョン/タグを CI matrix に置くことで、
-   新しい Daml バージョンで文法が壊れたことを自動検出する
+   0 件であることを検証。週次 cron で回すことで、新しい Daml バージョンで
+   文法が壊れたことを自動検出する
+
+   実績: 634 ファイル中 632 が clean。残る 2 件（同一ファイルの重複）は
+   **上流 tree-sitter-haskell のバグ**で、括弧付き負数で始まる do 文
+   （`f = do` の次行に `(-1)`）が upstream master でもパースできない。
+   スクリプト内で理由付きの allowlist にしてある
 
 この追従テストが「Daml のバージョンに追従できていない」を構造的に防ぐ主要な仕掛けである。
 
