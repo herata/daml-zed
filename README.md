@@ -63,10 +63,15 @@ git clone https://github.com/herata/daml-zed
 Then in Zed: `cmd-shift-p` → `zed: install dev extension` → pick
 `daml-zed/editors/zed`.
 
-Building a dev extension needs `rustup` with the `wasm32-wasip1` target:
+Building a dev extension needs `rustup`, a Rust of 1.82 or newer as the
+**default** toolchain, and the `wasm32-wasip2` target. Zed installs the target
+itself, but only into the default toolchain — a directory override does not
+apply, and an older default fails with `no prebuilt artifacts available for
+target 'wasm32-wasip2'`.
 
 ```sh
-rustup target add wasm32-wasip1
+rustup default stable
+rustup target add wasm32-wasip2
 ```
 
 ## Settings
@@ -120,7 +125,7 @@ an option, so it is simply off.
 
 | Path | What it is |
 | --- | --- |
-| `editors/zed/` | The Zed extension, compiled to `wasm32-wasip1` |
+| `editors/zed/` | The Zed extension, compiled to `wasm32-wasip2` |
 | `editors/zed/src/server.rs` | Argument construction and `dpm` lookup. No Zed API calls, so it is unit tested |
 | `editors/zed/src/lib.rs` | The only code that talks to Zed. Not automatically testable |
 | `editors/zed/languages/daml/` | tree-sitter queries |
@@ -137,7 +142,7 @@ and needs to keep merging from upstream. `extension.toml` pins the revision.
 ```sh
 cd editors/zed
 cargo test                          # the pure logic in server.rs
-cargo build --target wasm32-wasip1  # what Zed loads
+cargo build --target wasm32-wasip2  # what Zed loads
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 ```
 

@@ -20,7 +20,7 @@ bump `version` in the same file.
 ```sh
 cd editors/zed
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cargo build --target wasm32-wasip1
+cargo build --target wasm32-wasip2
 ```
 
 Install the dev extension and walk the manual checklist in the README. The

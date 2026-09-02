@@ -64,7 +64,11 @@ Zed には Daml のサポートが存在しない。公式レジストリ (`zed.
 
 ### 3.2 Zed 側の制約
 
-- Zed 拡張は WASM (`wasm32-wasip1`)。Webview もクライアント側コマンドも作れない
+- Zed 拡張は WASM (`wasm32-wasip2`)。Webview もクライアント側コマンドも作れない
+- Zed は拡張を **rustup の既定ツールチェーン**でビルドする。ディレクトリ単位の
+  `rustup override` は効かず、既定が古いと
+  `no prebuilt artifacts available for target 'wasm32-wasip2'` で失敗する
+  （実機で遭遇。既定が 1.80.1 だった）。wasip2 は Rust 1.82 以降
 - `window/showDocument` は client capability に**含まれていない**
   （`crates/lsp/src/lsp.rs` の `WindowClientCapabilities` は `work_done_progress` と
   `show_message` のみ）
@@ -88,7 +92,7 @@ multi-package 横断ジャンプ）は `damlc multi-ide` サーバ側にある�
 └───────────────────────────────────────────────────┘
               ↑ extension.toml が repository + commit で参照
 ┌─ daml-zed (本リポジトリ) ─────────────────────────┐
-│  editors/zed/            Zed 拡張 (wasm32-wasip1)  │
+│  editors/zed/            Zed 拡張 (wasm32-wasip2)  │
 │    ・言語登録 (.daml)                               │
 │    ・tree-sitter クエリ (.scm)                      │
 │    ・LSP プロセスの発見と起動のみ                    │
@@ -294,7 +298,7 @@ Zed 拡張の WASM 部分は自動テストが困難であるため、次の4層
 1. **純ロジックの単体テスト**: 引数組み立てとエラー分岐を純関数に切り出し、
    `cargo test`（ネイティブターゲット）で網羅する。`worktree` は trait で
    抽象化してモックを注入する
-2. **WASM ビルド検証**: CI で `cargo build --target wasm32-wasip1` が通ることを保証
+2. **WASM ビルド検証**: CI で `cargo build --target wasm32-wasip2` が通ることを保証
 3. **クエリ検証**: tree-sitter CLI の `tree-sitter query` をサンプル `.daml` に対して
    実行し、想定したキャプチャが得られることを CI で検証
 4. **手動検証チェックリスト**: dev extension としてローカル install し、
