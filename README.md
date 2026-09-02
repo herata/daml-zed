@@ -212,6 +212,9 @@ the dev extension and walk this list against `testdata/sample.daml`:
 - [ ] Completion renders as `name : Type`
 - [ ] `cmd-/` comments with `-- `
 - [ ] In a multi-package project, go to definition crosses package boundaries
+- [ ] With `autorun_scripts` on, breaking a `Script` - make a party exercise a
+      choice it does not control - produces an error diagnostic on the script's
+      declaration whose message includes the committed transactions
 - [ ] `debug: open language server logs` shows the bridge in front of
       `dpm damlc multi-ide --telemetry-ignored --log-level=Warning`, or just
       the latter if no bridge is installed
