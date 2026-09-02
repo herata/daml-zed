@@ -6,12 +6,13 @@
 //! and `damlc multi-ide`, handles that command itself, and puts the HTML the
 //! server produces on a loopback HTTP server instead.
 //!
-//! Usage: `daml-ide-bridge [--no-open] -- <language server command...>`
+//! Usage: `daml-ide-bridge [--no-open] [--log PATH] -- <language server command...>`
 
 mod framing;
 mod http;
 mod ids;
 mod intercept;
+mod log;
 mod open;
 mod page;
 mod resources;
@@ -31,14 +32,30 @@ fn main() -> std::io::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let auto_open = !args.iter().any(|a| a == "--no-open");
     args.retain(|a| a != "--no-open");
+
+    // An editor swallows the bridge's stderr into a log only it can show, so a
+    // file is the only way to see what actually crossed the wire.
+    let log_path = args
+        .iter()
+        .position(|a| a == "--log")
+        .and_then(|i| args.get(i + 1).cloned())
+        .or_else(|| std::env::var("DAML_IDE_BRIDGE_LOG").ok());
+    if let Some(i) = args.iter().position(|a| a == "--log") {
+        args.drain(i..=(i + 1).min(args.len() - 1));
+    }
+
     let server_command: Vec<String> = match args.iter().position(|a| a == "--") {
         Some(i) => args[i + 1..].to_vec(),
         None => args,
     };
     if server_command.is_empty() {
-        eprintln!("usage: daml-ide-bridge [--no-open] -- <language server command...>");
+        eprintln!(
+            "usage: daml-ide-bridge [--no-open] [--log PATH] -- <language server command...>"
+        );
         std::process::exit(2);
     }
+    log::open(log_path.as_deref());
+    log::line(&format!("start: {}", server_command.join(" ")));
     run(server_command, auto_open)
 }
 
@@ -55,6 +72,7 @@ fn run(server_command: Vec<String>, auto_open: bool) -> std::io::Result<()> {
     let server = http::serve(Arc::clone(&registry), token.clone())?;
     let base = format!("http://127.0.0.1:{}", server.port);
     eprintln!("daml-ide-bridge: script results at {base}/?token={token}");
+    log::line(&format!("http: {base}/?token={token}"));
 
     let (to_server, server_rx) = channel::<Value>();
     let (to_client, client_rx) = channel::<Value>();
@@ -94,6 +112,7 @@ fn run(server_command: Vec<String>, auto_open: bool) -> std::io::Result<()> {
         let context = context.clone();
         thread::spawn(move || {
             while let Ok(Some(msg)) = framing::read_message(&mut child_stdout) {
+                log::message("server->editor", &msg);
                 let outbound = interceptor.lock().unwrap().on_server_message(msg);
                 dispatch(outbound, &context);
             }
@@ -103,9 +122,11 @@ fn run(server_command: Vec<String>, auto_open: bool) -> std::io::Result<()> {
     // editor -> server
     let mut stdin = BufReader::new(std::io::stdin());
     while let Ok(Some(msg)) = framing::read_message(&mut stdin) {
+        log::message("editor->server", &msg);
         let outbound = interceptor.lock().unwrap().on_client_message(msg);
         dispatch(outbound, &context);
     }
+    log::line("editor closed the connection");
 
     // The editor closed its end, so the server has no reason to stay up.
     let _ = child.kill();
@@ -133,9 +154,13 @@ fn dispatch(outbound: Vec<Outbound>, ctx: &Context) {
                 let _ = ctx.to_server.send(msg);
             }
             Outbound::ToClient(msg) => {
+                // Logged again on the way out, so a rewrite shows up as a
+                // before/after pair in the trace.
+                log::message("bridge->editor", &msg);
                 let _ = ctx.to_client.send(msg);
             }
             Outbound::Show { title, uri } => {
+                log::line(&format!("show: {title} {uri}"));
                 let first = !ctx.registry.is_known(&uri);
                 let id = ctx.registry.register(&title, &uri);
                 if first {
@@ -155,7 +180,10 @@ fn dispatch(outbound: Vec<Outbound>, ctx: &Context) {
                     open::url(&url);
                 }
             }
-            Outbound::ResourceChanged { uri, contents } => ctx.registry.update(&uri, &contents),
+            Outbound::ResourceChanged { uri, contents } => {
+                log::line(&format!("rendered: {} bytes for {uri}", contents.len()));
+                ctx.registry.update(&uri, &contents)
+            }
             Outbound::ResourceProgress { uri } => ctx.registry.set_running(&uri),
         }
     }
