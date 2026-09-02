@@ -22,6 +22,20 @@ jobs:
       - run: cargo test
       - run: cargo build --target wasm32-wasip1
 
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/daml-ide-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
   queries:
     # Zed silently ignores a query that does not compile, so check every one of
     # them against the exact grammar revision the extension pins.

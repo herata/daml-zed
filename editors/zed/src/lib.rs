@@ -37,7 +37,8 @@ impl zed::Extension for DamlExtension {
         }
 
         let settings = ServerSettings::from_json(lsp_settings.settings);
-        let resolved = resolve_command(worktree.which("dpm"), &settings)?;
+        let bridge = find_bridge(&settings, worktree);
+        let resolved = resolve_command(worktree.which("dpm"), bridge, &settings)?;
 
         Ok(zed::Command {
             command: resolved.program,
@@ -115,6 +116,19 @@ impl zed::Extension for DamlExtension {
             code,
         })
     }
+}
+
+/// Zed cannot show script results itself, so they go through a sidecar. Its
+/// absence is not an error: everything else works without it, and the user is
+/// simply back to the phase 1 behaviour.
+fn find_bridge(settings: &ServerSettings, worktree: &Worktree) -> Option<String> {
+    if !settings.script_results {
+        return None;
+    }
+    settings
+        .bridge_path
+        .clone()
+        .or_else(|| worktree.which("daml-ide-bridge"))
 }
 
 zed::register_extension!(DamlExtension);

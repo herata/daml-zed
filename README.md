@@ -13,16 +13,32 @@ projects.
 The outline (`cmd-shift-o`) lists templates, choices, interfaces, interface
 instances and exceptions, which is how a Daml file is usually navigated.
 
-## What you don't get
+## Script results
 
-**Script results.** In VS Code, Daml Studio renders them in a webview: the
-server returns a code lens bound to a client-side command, the extension opens
-a panel and receives the rendered HTML over `daml/virtualResource/didChange`.
-A Zed extension runs in WebAssembly and can neither register client-side
-commands nor open a panel, and Zed's LSP client does not advertise
-`window/showDocument`. So this cannot be built inside the extension. A sidecar
-that proxies the language server and serves the results to a browser is planned
-as phase 2; see `docs/superpowers/specs/`.
+They work, in a browser rather than an editor panel.
+
+Invoke the **Show script results** code action on a Daml `Script` and the
+rendered transaction and table views open in your browser, updating themselves
+every time the language server re-renders. With `"code_lens": "on"` in your Zed
+settings the same thing is one click on the `Script results` lens above the
+declaration.
+
+This runs outside the editor because it has to. In VS Code the extension opens
+a webview and subscribes to a `daml://` virtual resource; a Zed extension runs
+in WebAssembly, so it can neither register the client-side command the lens
+refers to nor open a panel, and Zed's LSP client does not advertise
+`window/showDocument`. So a sidecar, [`daml-ide-bridge`](crates/daml-ide-bridge),
+proxies the language server and serves the results over loopback HTTP.
+
+The bridge is optional. Without it everything above still works and only script
+results are missing. Build and install it with:
+
+```sh
+cargo install --path crates/daml-ide-bridge
+```
+
+Set `script_results` to `false` to run the language server directly even when a
+bridge is on `PATH`.
 
 ## Requirements
 
@@ -72,6 +88,9 @@ rustup target add wasm32-wasip1
 | --- | --- | --- | --- |
 | `log_level` | `Debug`, `Info`, `Warning`, `Error` | `Warning` | Passed to `damlc multi-ide` as `--log-level` |
 | `extra_arguments` | list of strings | `[]` | Appended to the `damlc multi-ide` command line |
+| `script_results` | bool | `true` | Run the language server behind `daml-ide-bridge` when one is available |
+| `bridge_path` | string | unset | Where to find `daml-ide-bridge`, if not on `PATH` |
+| `bridge_args` | list of strings | `[]` | Passed to the bridge, e.g. `["--no-open"]` |
 
 If `dpm` is not on your `PATH`, or you need the legacy `daml` assistant or an
 SDK older than 3.4, point the extension at a binary directly. This bypasses
@@ -106,7 +125,7 @@ an option, so it is simply off.
 | `editors/zed/src/lib.rs` | The only code that talks to Zed. Not automatically testable |
 | `editors/zed/languages/daml/` | tree-sitter queries |
 | `editors/zed/testdata/sample.daml` | Exercises every Daml construct; CI checks it parses and that every query compiles against it |
-| `crates/daml-ide-bridge/` | Phase 2, the script-results sidecar. Not written yet |
+| `crates/daml-ide-bridge/` | The script-results sidecar: an LSP proxy with a loopback HTTP server |
 
 The grammar lives in a separate repository,
 [tree-sitter-daml](https://github.com/herata/tree-sitter-daml), because it is a
@@ -138,8 +157,12 @@ the dev extension and walk this list against `testdata/sample.daml`:
 - [ ] Completion renders as `name : Type`
 - [ ] `cmd-/` comments with `-- `
 - [ ] In a multi-package project, go to definition crosses package boundaries
-- [ ] `debug: open language server logs` shows
-      `dpm damlc multi-ide --telemetry-ignored --log-level=Warning`
+- [ ] `debug: open language server logs` shows the bridge in front of
+      `dpm damlc multi-ide --telemetry-ignored --log-level=Warning`, or just
+      the latter if no bridge is installed
+- [ ] With the bridge installed, the "Show script results" code action on a
+      `Script` opens a browser page with the transaction and table views
+- [ ] Editing the script updates that page without reloading it by hand
 
 ## License
 

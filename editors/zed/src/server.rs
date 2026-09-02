@@ -29,11 +29,30 @@ impl LogLevel {
 }
 
 /// User settings read from `lsp."daml-language-server".settings`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerSettings {
     pub log_level: LogLevel,
     pub extra_arguments: Vec<String>,
+    /// Proxy the language server through daml-ide-bridge, which serves script
+    /// results to a browser. Zed cannot render them itself.
+    pub script_results: bool,
+    /// Where to find the bridge, when it is not on PATH.
+    pub bridge_path: Option<String>,
+    pub bridge_args: Vec<String>,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            log_level: LogLevel::default(),
+            extra_arguments: Vec::new(),
+            // Deriving Default would turn this off, which is not the intent.
+            script_results: true,
+            bridge_path: None,
+            bridge_args: Vec::new(),
+        }
+    }
 }
 
 impl ServerSettings {
@@ -70,16 +89,35 @@ pub fn build_args(settings: &ServerSettings) -> Vec<String> {
     args
 }
 
-/// `dpm_path` is whatever `worktree.which("dpm")` returned.
+/// `dpm_path` and `bridge_path` are whatever the lookups in `lib.rs` found.
+///
+/// With a bridge available the language server runs behind it, which is what
+/// makes script results viewable. Without one everything else still works, so
+/// a missing bridge is not an error.
 pub fn resolve_command(
     dpm_path: Option<String>,
+    bridge_path: Option<String>,
     settings: &ServerSettings,
 ) -> Result<ResolvedCommand, String> {
-    let program = dpm_path.ok_or_else(|| INSTALL_HINT.to_string())?;
-    Ok(ResolvedCommand {
-        program,
-        args: build_args(settings),
-    })
+    let dpm = dpm_path.ok_or_else(|| INSTALL_HINT.to_string())?;
+    let server = build_args(settings);
+
+    match bridge_path.filter(|_| settings.script_results) {
+        Some(bridge) => {
+            let mut args = settings.bridge_args.clone();
+            args.push("--".to_string());
+            args.push(dpm);
+            args.extend(server);
+            Ok(ResolvedCommand {
+                program: bridge,
+                args,
+            })
+        }
+        None => Ok(ResolvedCommand {
+            program: dpm,
+            args: server,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -129,18 +167,74 @@ mod tests {
 
     #[test]
     fn missing_dpm_produces_an_actionable_error() {
-        let err = resolve_command(None, &ServerSettings::default()).unwrap_err();
+        let err = resolve_command(None, None, &ServerSettings::default()).unwrap_err();
         assert!(err.contains("dpm"));
         assert!(err.contains("https://docs.digitalasset.com"));
     }
 
     #[test]
     fn uses_dpm_when_found() {
-        let cmd =
-            resolve_command(Some("/opt/dpm/bin/dpm".into()), &ServerSettings::default()).unwrap();
+        let cmd = resolve_command(
+            Some("/opt/dpm/bin/dpm".into()),
+            None,
+            &ServerSettings::default(),
+        )
+        .unwrap();
         assert_eq!(cmd.program, "/opt/dpm/bin/dpm");
         assert_eq!(cmd.args[0], "damlc");
         assert_eq!(cmd.args[1], "multi-ide");
+    }
+
+    #[test]
+    fn wraps_the_server_in_the_bridge_when_one_is_available() {
+        let cmd = resolve_command(
+            Some("/opt/dpm/bin/dpm".into()),
+            Some("/opt/bin/daml-ide-bridge".into()),
+            &ServerSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(cmd.program, "/opt/bin/daml-ide-bridge");
+        assert_eq!(cmd.args[0], "--");
+        assert_eq!(cmd.args[1], "/opt/dpm/bin/dpm");
+        assert_eq!(cmd.args[2], "damlc");
+        assert_eq!(cmd.args[3], "multi-ide");
+    }
+
+    #[test]
+    fn script_results_can_be_turned_off() {
+        let settings = ServerSettings {
+            script_results: false,
+            ..Default::default()
+        };
+        let cmd = resolve_command(
+            Some("/opt/dpm/bin/dpm".into()),
+            Some("/opt/bin/daml-ide-bridge".into()),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(cmd.program, "/opt/dpm/bin/dpm");
+    }
+
+    #[test]
+    fn bridge_arguments_come_before_the_separator() {
+        let settings = ServerSettings {
+            bridge_args: vec!["--no-open".into()],
+            ..Default::default()
+        };
+        let cmd = resolve_command(
+            Some("/opt/dpm/bin/dpm".into()),
+            Some("/opt/bin/daml-ide-bridge".into()),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(cmd.args[0], "--no-open");
+        assert_eq!(cmd.args[1], "--");
+    }
+
+    #[test]
+    fn script_results_default_to_on() {
+        assert!(ServerSettings::default().script_results);
+        assert!(ServerSettings::from_json(Some(serde_json::json!({}))).script_results);
     }
 
     #[test]
