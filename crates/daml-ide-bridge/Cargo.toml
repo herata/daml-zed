@@ -1,0 +1,12 @@
+[package]
+name = "daml-ide-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Serves Daml script results to a browser by proxying the Daml language server"
+
+[dependencies]
+getrandom = "0.3"
+serde_json = "1"
+tiny_http = "0.12"

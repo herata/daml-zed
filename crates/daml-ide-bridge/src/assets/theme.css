@@ -1,0 +1,61 @@
+/* The HTML damlc renders references VS Code's theme variables by name. Define
+   them here rather than rewriting the HTML, so a change on the server side does
+   not silently lose colour. */
+:root {
+  color-scheme: light dark;
+  --link-color: #0969da;
+  --vscode-terminal-ansiRed: #cf222e;
+  --vscode-terminal-ansiBrightRed: #a40e26;
+  --vscode-terminal-ansiYellow: #9a6700;
+  --vscode-terminal-ansiBrightYellow: #7d4e00;
+  --vscode-terminal-ansiGreen: #1a7f37;
+  --vscode-terminal-ansiBlue: #0969da;
+  --vscode-terminal-ansiBrightBlue: #218bff;
+  --vscode-terminal-ansiMagenta: #8250df;
+  --vscode-terminal-ansiWhite: #6e7781;
+  --page-bg: #ffffff;
+  --page-fg: #1f2328;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --link-color: #4493f8;
+    --vscode-terminal-ansiRed: #ff7b72;
+    --vscode-terminal-ansiBrightRed: #ffa198;
+    --vscode-terminal-ansiYellow: #d29922;
+    --vscode-terminal-ansiBrightYellow: #e3b341;
+    --vscode-terminal-ansiGreen: #3fb950;
+    --vscode-terminal-ansiBlue: #58a6ff;
+    --vscode-terminal-ansiBrightBlue: #79c0ff;
+    --vscode-terminal-ansiMagenta: #bc8cff;
+    --vscode-terminal-ansiWhite: #8b949e;
+    --page-bg: #0d1117;
+    --page-fg: #e6edf3;
+  }
+}
+
+body {
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  margin: 0;
+  padding: 1rem 1rem 2.5rem;
+}
+
+a { color: var(--link-color); }
+
+table, th, td {
+  border-color: color-mix(in srgb, var(--page-fg) 25%, transparent);
+}
+
+/* The bridge's own status line, appended to the body by the injected script. */
+#daml-bridge-status {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  padding: 2px 8px;
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--page-bg);
+  background: color-mix(in srgb, var(--page-fg) 60%, transparent);
+  border-top-left-radius: 4px;
+}
