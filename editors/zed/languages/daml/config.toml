@@ -1,0 +1,17 @@
+name = "Daml"
+grammar = "daml"
+path_suffixes = ["daml"]
+autoclose_before = ",;=)}]"
+line_comments = ["-- "]
+block_comment = ["{- ", " -}"]
+tab_size = 2
+hard_tabs = false
+word_characters = ["'"]
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false },
+    { start = "'", end = "'", close = true, newline = false },
+    { start = "`", end = "`", close = true, newline = false },
+]

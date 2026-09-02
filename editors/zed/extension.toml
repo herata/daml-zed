@@ -1,0 +1,16 @@
+id = "daml"
+name = "Daml"
+description = "Daml smart contract language support"
+version = "0.1.0"
+schema_version = 1
+authors = ["herata"]
+repository = "https://github.com/herata/daml-zed"
+
+[grammars.daml]
+repository = "https://github.com/herata/tree-sitter-daml"
+commit = "83062dd835557d18eb3edadd6d88fc9b4e885415"
+
+[language_servers.daml-language-server]
+name = "Daml Language Server"
+languages = ["Daml"]
+language_ids = { "Daml" = "daml" }
