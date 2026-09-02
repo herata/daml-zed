@@ -140,9 +140,8 @@ Zed は未知の通知を無視するだけだが、9KB の HTML を毎回エデ
 | パス | 内容 |
 |---|---|
 | `GET /` | 開いている Script results の一覧。何も開いていなければその旨 |
-| `GET /r/{id}` | 1つの結果ページ。SSE で自動更新する |
-| `GET /r/{id}/events` | SSE ストリーム。`data:` に HTML 断片ではなく更新イベントを流し、ページ側が再取得する |
-| `GET /r/{id}/body` | 最新の HTML 本体。SSE で更新通知を受けたページがこれを取りに来る |
+| `GET /r/{id}` | 1つの結果ページ。**サーバが吐いた HTML をそのまま返す** |
+| `GET /r/{id}/events` | SSE ストリーム。更新イベントを流し、ページ側は `location.reload()` する |
 | `GET /assets/webview.js` | vendoring した VS Code 拡張の webview.js |
 | `GET /assets/webview.css` | 同 webview.css |
 | `GET /assets/theme.css` | CSS 変数の定義（セクション 4.1） |
@@ -154,6 +153,21 @@ Zed は未知の通知を無視するだけだが、9KB の HTML を毎回エデ
 起動時に stderr へ 1 行出す。ローカルのみとはいえ、同じマシンの他プロセスから
 プロジェクトのソースが読めてしまうため、`/r/{id}` は起動時に生成したランダムな
 トークンをクエリに要求する。ブリッジが開くリンクにはトークンが含まれる。
+
+### 4.0 ページをラップしない（実装で判明した制約）
+
+当初はサーバの HTML を自前のシェルの `<div>` に埋める設計だったが、これは成立しない。
+`webview.css` は `body.hide_table .table` のように **`<body>` のクラス**に対して効き、
+サーバはそのクラスでどちらのビューを表示するかを決めている。div に入れるとセレクタが
+外れて両方のビューが同時に出る。
+
+したがって `/r/{id}` はサーバの文書をそのまま返し、ブリッジが足すものは `<head>` に
+注入する。更新時は差し替えではなく `location.reload()` にする。
+
+もう一点、`webview.js` は先頭で `const vscode = acquireVsCodeApi()` を呼ぶ。ブラウザには
+存在しないので、**`webview.js` より前に**実行されるシムを注入する。シムは
+`postMessage` で飛んでくるビュー選択を `localStorage` に保存し、リロード後に復元する。
+これがないと再レンダのたびに読み手のビュー選択が初期状態に戻る。
 
 ### 4.1 テーマ
 
@@ -204,14 +218,17 @@ VS Code のテーマ変数名をそのまま使うのは、サーバが吐く HT
 
 | ファイル | 責務 |
 |---|---|
-| `src/main.rs` | 引数解析と起動。他は呼ぶだけ |
+| `src/main.rs` | 引数解析、プロセス起動、2本のパイプの中継、`Outbound` の実行 |
 | `src/framing.rs` | LSP の `Content-Length` フレーミング。読み書きだけ |
-| `src/proxy.rs` | 2本のパイプの中継と、介入ポイントの振り分け |
 | `src/intercept.rs` | どのメッセージをどう書き換えるかの純ロジック。`serde_json::Value` を受けて `Value` を返すだけで I/O を持たない |
-| `src/resources.rs` | 仮想リソースの状態（URI、タイトル、最新 HTML、購読者） |
+| `src/resources.rs` | 仮想リソースの状態（タイトル、最新 HTML、購読者） |
+| `src/page.rs` | プレースホルダ置換とシムの注入 |
 | `src/http.rs` | HTTP と SSE |
+| `src/ids.rs` | 安定 ID とアクセストークン |
 | `src/assets/` | vendoring した `webview.js` / `webview.css` と自前の `theme.css` |
 | `src/open.rs` | ブラウザ起動。プラットフォーム分岐だけ |
+
+当初 `src/proxy.rs` を分ける想定だったが、中継は `main.rs` の 30 行で済んだので分けていない。
 
 `intercept.rs` に I/O を持たせないのが要。LSP メッセージの書き換えは全部ここに集め、
 JSON in / JSON out の単体テストで固める。フェーズ1で `server.rs` を分離したのと同じ理由で、
@@ -223,11 +240,13 @@ JSON in / JSON out の単体テストで固める。フェーズ1で `server.rs`
    initialize 結果へのコマンド追加、コードアクション注入、`daml.showResource` の捕捉、
    `virtualResource/didChange` の吸収、それ以外が素通しであること
 2. **`framing.rs` の単体テスト**: 分割到着、複数フレーム連結、不正ヘッダ
-3. **統合テスト**: ブリッジを実際に `dpm damlc multi-ide` の前に立て、
-   フェーズ1で書いた LSP プローブと同じ手順を踏んで、
-   コードアクションが返り、HTTP で HTML が取れることを確認する。
-   `dpm` が無い環境ではスキップする
-4. **手動確認**: Zed から使い、ブラウザが開いて編集に追随することを見る
+3. **統合テスト**: `tests/fixtures/server.py` が実測したメッセージを再生する
+   スタンドインとして立ち、ブリッジをエディタと同じように駆動する。Daml SDK も
+   コンパイルも要らないので `cargo test` に入れられ、1秒で回る
+4. **実機検証**: `scripts/verify-against-damlc.py` が本物の `dpm damlc multi-ide` を
+   相手に同じ手順を踏み、コードアクション、レンダ結果、編集時のライブ更新までを確認する。
+   ビルド済みプロジェクトが要るので CI には入れない
+5. **手動確認**: Zed から使い、ブラウザが開いて編集に追随することを見る
 
 ## 9. 非目標
 
