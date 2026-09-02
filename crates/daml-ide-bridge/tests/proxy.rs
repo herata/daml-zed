@@ -138,14 +138,18 @@ fn a_script_result_reaches_the_browser() {
         "and must not drop the server's, got {commands:?}"
     );
 
-    bridge.send(json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/codeLens",
-                       "params": {"textDocument": {"uri": "file:///a.daml"}}}));
+    bridge.send(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/codeLens",
+                       "params": {"textDocument": {"uri": "file:///a.daml"}}}),
+    );
     bridge.response(2);
 
-    bridge.send(json!({"jsonrpc": "2.0", "id": 3, "method": "textDocument/codeAction",
+    bridge.send(
+        json!({"jsonrpc": "2.0", "id": 3, "method": "textDocument/codeAction",
                        "params": {"textDocument": {"uri": "file:///a.daml"},
                                   "range": {"start": {"line": 7, "character": 0},
-                                            "end": {"line": 7, "character": 0}}}}));
+                                            "end": {"line": 7, "character": 0}}}}),
+    );
     let actions = bridge.response(3);
     let action = actions["result"][0].clone();
     assert_eq!(
@@ -153,8 +157,10 @@ fn a_script_result_reaches_the_browser() {
         "the code action is the entry point Zed can always show"
     );
 
-    bridge.send(json!({"jsonrpc": "2.0", "id": 4, "method": "workspace/executeCommand",
-                       "params": action["command"]}));
+    bridge.send(
+        json!({"jsonrpc": "2.0", "id": 4, "method": "workspace/executeCommand",
+                       "params": action["command"]}),
+    );
     bridge.response(4);
 
     // The stand-in answers the resulting didOpen with the rendered HTML.
