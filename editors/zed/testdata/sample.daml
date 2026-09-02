@@ -1,0 +1,55 @@
+module Sample where
+
+import DA.List (head)
+
+data Kind = Alpha | Beta
+  deriving (Eq, Show)
+
+data View = View with
+  owner : Party
+
+interface Token requires Other.I where
+  viewtype View
+  getOwner : Party
+
+template Iou
+  with
+    issuer : Party
+    owner : Party
+    amount : Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure amount > 0.0
+    key (issuer, owner) : (Party, Party)
+    maintainer issuer
+
+    nonconsuming choice Peek : Decimal
+      observer owner
+      controller owner
+      do
+        pure amount
+
+    choice Transfer : ContractId Iou
+      with
+        newOwner : Party
+      controller owner
+      do
+        create this with owner = newOwner
+
+    interface instance Token for Iou where
+      view = View with owner
+
+exception Boom
+  with
+    text : Text
+  where
+    message text
+
+run : Script ()
+run = do
+  p <- allocateParty "p"
+  try do
+    pure ()
+  catch
+    (Boom msg) -> pure ()

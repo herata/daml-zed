@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/zed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --target wasm32-wasip1
+
+  queries:
+    # Zed silently ignores a query that does not compile, so check every one of
+    # them against the exact grammar revision the extension pins.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check out the pinned grammar revision
+        run: |
+          commit=$(awk '/^\[grammars.daml\]/{f=1} f && /^commit/{gsub(/[",]/,"",$3); print $3; exit}' \
+            editors/zed/extension.toml)
+          repo=$(awk '/^\[grammars.daml\]/{f=1} f && /^repository/{gsub(/[",]/,"",$3); print $3; exit}' \
+            editors/zed/extension.toml)
+          echo "grammar $repo @ $commit"
+          git clone --quiet "$repo" grammar
+          git -C grammar checkout --quiet "$commit"
+      - run: npm ci
+        working-directory: grammar
+      - run: npx tree-sitter generate
+        working-directory: grammar
+      - name: Validate every query against the grammar
+        working-directory: grammar
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/editors/zed/testdata/sample.daml" /tmp/sample.daml
+          for q in "$GITHUB_WORKSPACE"/editors/zed/languages/daml/*.scm; do
+            echo "== $(basename "$q")"
+            npx tree-sitter query "$q" /tmp/sample.daml > /dev/null
+          done
+      - name: The sample must parse without errors
+        working-directory: grammar
+        run: |
+          npx tree-sitter parse --quiet /tmp/sample.daml
