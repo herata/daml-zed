@@ -1,18 +1,21 @@
 # daml-ide-bridge
 
-Serves Daml script results to a browser by proxying the Daml language server.
+Shows Daml script results in the editor by proxying the Daml language server.
 
 ## Why it exists
 
-In VS Code, Daml Studio shows script results in a webview. The language server
-returns a code lens bound to a command the extension registers on the client
-side; the extension opens a panel, subscribes to a `daml://` virtual resource,
-and renders the HTML the server pushes.
+In VS Code, Daml Studio renders script results in a webview. The language
+server returns a code lens bound to a command the extension registers on the
+client side; the extension opens a panel, subscribes to a `daml://` virtual
+resource, and draws the HTML the server pushes.
 
-None of that is available to a Zed extension. Extensions run in WebAssembly, so
-they can neither register a client-side command nor open a panel, and Zed's LSP
-client does not advertise `window/showDocument`. The rendering has to happen
-outside the editor, which is what this process is for.
+A Zed extension can do none of that. It runs in WebAssembly, so it can neither
+register a client-side command nor open a panel, and Zed's LSP client does not
+advertise `window/showDocument`. So this process sits in front of
+`damlc multi-ide`, handles the command itself, converts the rendered HTML to
+Markdown, and writes it to a file the editor keeps open. Editors reload an
+unmodified buffer when the file changes on disk, which is what makes the pane
+live.
 
 It is editor-agnostic: anything that speaks LSP over stdio can put it in front
 of `damlc multi-ide` and get the same behaviour.
@@ -23,44 +26,51 @@ of `damlc multi-ide` and get the same behaviour.
 daml-ide-bridge -- dpm damlc multi-ide --telemetry-ignored
 ```
 
-It prints the URL of its HTTP server on stderr and then relays LSP on stdio.
-Invoke the "Show script results" code action on a Daml `Script`, and the page
-opens in your browser and updates itself whenever the server re-renders.
+Invoke the "Show script results" code action on a Daml `Script`. The result is
+written to `<project>/.daml/ide/script-results.md`, and the path is also sent to
+the editor as a `window/showMessage` notification. Open that file once, beside
+the source, and it updates on every subsequent click and on every edit.
 
-`--no-open` suppresses the automatic browser launch; the URL is still printed.
+`.daml/` is already in the `.gitignore` of a `dpm new` project.
+
+| Option | Meaning |
+| --- | --- |
+| `--results PATH` | Write the pane somewhere other than `<cwd>/.daml/ide/script-results.md` |
+| `--log PATH` | Trace every message that crosses the proxy. Also `DAML_IDE_BRIDGE_LOG` |
+
+## One pane, not one file per script
+
+The editor cannot be told to open a document, so every additional file is
+another manual open. A single pane is opened once and then keeps showing
+whichever script was asked for last. A render arriving for any other script is
+ignored rather than allowed to steal the pane.
 
 ## What it does to the protocol
 
 | Direction | Message | Change |
 | --- | --- | --- |
-| server → editor | `initialize` result | adds `daml.showResource` to `executeCommandProvider.commands`, because Zed will not run a command the server does not claim |
-| server → editor | `textDocument/codeLens` result | passed through, and remembered |
-| server → editor | `textDocument/codeAction` result | a "Show script results" action is injected for any remembered lens on the requested lines |
+| server → editor | `initialize` result | adds `daml.showResource` to `executeCommandProvider.commands`. Zed drops a code action whose command the server does not claim |
+| editor → server | `didOpen`, `didSave`, `codeAction` on a `.daml` file | a `textDocument/codeLens` request is added, on the bridge's own behalf |
+| server → editor | the response to one of those | cached and swallowed; the editor never asked for it |
+| server → editor | `textDocument/codeAction` result | a "Show script results" action is injected for any cached lens on the requested lines |
 | editor → server | `workspace/executeCommand` for `daml.showResource` | handled here, never forwarded |
-| server → editor | `daml/virtualResource/*` | absorbed; the HTML goes to the browser instead |
+| server → editor | `daml/virtualResource/*` | absorbed; the HTML becomes the Markdown pane |
 | both | everything else | untouched |
 
-The code action matters because Zed's code lens support is opt-in
-(`"code_lens": "on"`), while code actions always work.
+The bridge asks for code lenses itself because Zed only requests them when the
+user has turned code lenses on, which is off by default. Without that the cache
+would stay empty and no code action would ever be injected.
 
-## Security
+The code action, rather than the code lens, is the entry point for the same
+reason: `"code_lens": "on"` is opt-in, while code actions always work.
 
-The HTTP server binds to `127.0.0.1` on a port the OS chooses. Loopback is
-reachable by every other process on the machine and these pages contain project
-source, so each request must carry a random per-process token. The links the
-bridge prints and opens include it.
+## Converting the HTML
 
-## Vendored files
-
-`src/assets/webview.js` and `src/assets/webview.css` are copied verbatim from
-[`digital-asset/daml`](https://github.com/digital-asset/daml), at
-`sdk/compiler/daml-extension/src/`. They are Apache-2.0, and their copyright
-headers are left intact. The HTML damlc renders references them through
-`$webviewSrc` and `$webviewCss` placeholders that the client is expected to fill
-in, and they implement the view toggles the rendered page's buttons call.
-
-`src/assets/theme.css` is ours: it defines the VS Code theme variables the
-rendered HTML refers to by name, for both colour schemes.
+`src/markdown.rs` does it without an HTML parser, because the markup is
+generated by damlc and small. The transaction view is already a monospaced tree
+separated by `<br>`, so it becomes a fenced code block nearly unchanged. The
+contract tables become Markdown tables. Tooltip spans are dropped, or the
+disclosure letter `S` would render as `SSignatory`.
 
 ## Re-checking the protocol after a Daml upgrade
 
@@ -70,6 +80,8 @@ DAML_PROJECT=/path/to/built/project ./scripts/probe-protocol.py
 
 It records the code lens, the virtual resource notification and the rendered
 HTML, which is where every claim in the table above came from.
+`tests/fixtures/script-result.html` is one such capture, and both the converter
+tests and the end-to-end test run against it.
 
 ## Development
 
@@ -78,5 +90,11 @@ cargo test    # unit tests plus an end-to-end test against a scripted server
 ```
 
 `tests/fixtures/server.py` replays the recorded protocol, so the end-to-end test
-needs neither a Daml SDK nor a compile. `src/intercept.rs` holds every rewrite
-and does no I/O; keep it that way.
+needs neither a Daml SDK nor a compile. `src/intercept.rs` holds every protocol
+rewrite and does no I/O; keep it that way.
+
+To check against a real server:
+
+```sh
+DAML_PROJECT=/path/to/built/project ./scripts/verify-against-damlc.py
+```

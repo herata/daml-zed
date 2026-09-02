@@ -6,6 +6,7 @@ docs/superpowers/specs/2026-09-02-daml-ide-bridge-design.md, so the bridge can
 be tested end to end without a Daml SDK or a compile.
 """
 import json
+import pathlib
 import sys
 
 VR = "daml://compiler?file=%2Fa.daml&top-level-decl=setup"
@@ -17,13 +18,9 @@ LENS = {
         "arguments": ["Script: setup", VR],
     },
 }
-HTML = (
-    '<!DOCTYPE HTML><html><head><style>.da-code {}</style>'
-    '<script src="$webviewSrc"></script>'
-    '<link rel="stylesheet" href="$webviewCss"></head>'
-    '<body class="hide_archived hide_transaction">'
-    "<table><tr><td>Iou</td></tr></table></body></html>"
-)
+# The real thing, captured by scripts/probe-protocol.py, so the test exercises
+# the Markdown conversion on markup damlc actually produces.
+HTML = (pathlib.Path(__file__).parent / "script-result.html").read_text()
 
 
 def send(obj):

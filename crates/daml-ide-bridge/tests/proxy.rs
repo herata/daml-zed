@@ -1,12 +1,12 @@
 //! Drives the bridge the way an editor would, against a scripted stand-in for
-//! the language server, and checks that a script result reaches HTTP.
+//! the language server, and checks that a script result lands in the pane.
 //!
 //! Using a stand-in rather than a real `damlc multi-ide` keeps this in `cargo
 //! test`: the real server needs a Daml SDK and minutes of compilation, and the
 //! part that can actually regress is the bridge.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
@@ -15,43 +15,45 @@ struct Bridge {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    authority: String,
-    token: String,
+    results: PathBuf,
 }
 
 impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = std::fs::remove_file(&self.results);
     }
 }
 
 fn start() -> Bridge {
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/server.py");
+    let results = std::env::temp_dir().join(format!(
+        "daml-ide-bridge-proxy-{}-{:?}.md",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let mut child = Command::new(env!("CARGO_BIN_EXE_daml-ide-bridge"))
-        .args(["--no-open", "--", "python3", fixture])
+        .args([
+            "--results",
+            results.to_str().unwrap(),
+            "--",
+            "python3",
+            fixture,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("the bridge starts");
 
-    // The bridge announces its URL on stderr before doing anything else.
+    // The bridge announces the pane on stderr before doing anything else.
     let mut stderr = BufReader::new(child.stderr.take().expect("piped"));
     let mut line = String::new();
     stderr.read_line(&mut line).expect("an announcement");
-    let url = line
-        .split_whitespace()
-        .find(|w| w.starts_with("http://"))
-        .unwrap_or_else(|| panic!("no url in {line:?}"))
-        .to_string();
-    let authority = url
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .expect("an authority")
-        .to_string();
-    let token = url.split("token=").nth(1).expect("a token").to_string();
-
+    assert!(line.contains("script results in"), "unexpected: {line:?}");
     // Keep draining stderr so the bridge never blocks writing to it.
     std::thread::spawn(move || {
         let mut sink = String::new();
@@ -64,8 +66,7 @@ fn start() -> Bridge {
         child,
         stdin,
         stdout,
-        authority,
-        token,
+        results,
     }
 }
 
@@ -95,37 +96,31 @@ impl Bridge {
         serde_json::from_slice(&body).unwrap()
     }
 
-    /// Reads until the response to this request arrives.
-    fn response(&mut self, id: i64) -> Value {
+    /// Reads until the response to this request arrives, collecting the
+    /// notifications that pass by.
+    fn response(&mut self, id: i64) -> (Value, Vec<Value>) {
+        let mut notifications = Vec::new();
         for _ in 0..50 {
             let msg = self.recv();
             if msg["id"] == id {
-                return msg;
+                return (msg, notifications);
             }
+            notifications.push(msg);
         }
         panic!("no response to request {id}");
     }
 
-    /// A dependency-free HTTP/1.0 GET; enough for a loopback test server.
-    fn get(&self, path: &str) -> String {
-        let mut stream = TcpStream::connect(&self.authority).expect("the http server is up");
-        let request = format!(
-            "GET {path} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            self.authority
-        );
-        stream.write_all(request.as_bytes()).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+    fn pane(&self) -> String {
+        std::fs::read_to_string(&self.results).unwrap_or_default()
     }
 }
 
 #[test]
-fn a_script_result_reaches_the_browser() {
+fn a_script_result_reaches_the_pane() {
     let mut bridge = start();
 
     bridge.send(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}));
-    let init = bridge.response(1);
+    let (init, _) = bridge.response(1);
     let commands = init["result"]["capabilities"]["executeCommandProvider"]["commands"]
         .as_array()
         .expect("the server's command list survives");
@@ -139,68 +134,68 @@ fn a_script_result_reaches_the_browser() {
     );
 
     bridge.send(
-        json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/codeLens",
-                       "params": {"textDocument": {"uri": "file:///a.daml"}}}),
-    );
-    bridge.response(2);
-
-    bridge.send(
         json!({"jsonrpc": "2.0", "id": 3, "method": "textDocument/codeAction",
-                       "params": {"textDocument": {"uri": "file:///a.daml"},
-                                  "range": {"start": {"line": 7, "character": 0},
-                                            "end": {"line": 7, "character": 0}}}}),
+               "params": {"textDocument": {"uri": "file:///a.daml"},
+                          "range": {"start": {"line": 7, "character": 0},
+                                    "end": {"line": 7, "character": 0}}}}),
     );
-    let actions = bridge.response(3);
-    let action = actions["result"][0].clone();
+    // The bridge fetches the lenses itself, so the first attempt can race it.
+    let mut action = Value::Null;
+    for id in 3..12 {
+        let (actions, _) = bridge.response(id);
+        if let Some(found) = actions["result"].as_array().and_then(|a| {
+            a.iter().find(|a| {
+                a["title"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Show script results"))
+            })
+        }) {
+            action = found.clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        bridge.send(
+            json!({"jsonrpc": "2.0", "id": id + 1, "method": "textDocument/codeAction",
+                   "params": {"textDocument": {"uri": "file:///a.daml"},
+                              "range": {"start": {"line": 7, "character": 0},
+                                        "end": {"line": 7, "character": 0}}}}),
+        );
+    }
     assert_eq!(
         action["title"], "Show script results: Script: setup",
-        "the code action is the entry point Zed can always show"
+        "the code action is the entry point the editor can always show"
     );
 
     bridge.send(
-        json!({"jsonrpc": "2.0", "id": 4, "method": "workspace/executeCommand",
-                       "params": action["command"]}),
+        json!({"jsonrpc": "2.0", "id": 90, "method": "workspace/executeCommand",
+               "params": action["command"]}),
     );
-    bridge.response(4);
+    let (_, notifications) = bridge.response(90);
+    assert!(
+        notifications
+            .iter()
+            .any(|n| n["method"] == "window/showMessage"),
+        "the editor is told where the pane is: {notifications:?}"
+    );
 
-    // The stand-in answers the resulting didOpen with the rendered HTML.
-    let mut page = String::new();
+    let mut pane = String::new();
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let index = bridge.get(&format!("/?token={}", bridge.token));
-        let Some(start) = index.find("/r/") else {
-            continue;
-        };
-        let id: String = index[start + 3..]
-            .chars()
-            .take_while(|c| c.is_ascii_hexdigit())
-            .collect();
-        page = bridge.get(&format!("/r/{id}?token={}", bridge.token));
-        if page.contains("<td>Iou</td>") {
+        pane = bridge.pane();
+        if pane.contains("## Transactions") {
             break;
         }
     }
-
     assert!(
-        page.contains("<td>Iou</td>"),
-        "the page should carry the render:\n{page}"
+        pane.contains("# Script: setup"),
+        "the pane should be titled:\n{pane}"
     );
     assert!(
-        !page.contains("$webviewSrc") && !page.contains("$webviewCss"),
-        "the asset placeholders must be substituted:\n{page}"
+        pane.contains("| #2:1 | active |"),
+        "the pane should carry the contract table:\n{pane}"
     );
     assert!(
-        page.contains(r#"class="hide_archived hide_transaction""#),
-        "the body class decides which view is shown:\n{page}"
+        !pane.contains('<'),
+        "no markup should survive into the pane:\n{pane}"
     );
-}
-
-#[test]
-fn the_token_is_required() {
-    let bridge = start();
-    assert!(bridge.get("/").contains("403"));
-    assert!(bridge.get("/?token=wrong").contains("403"));
-    assert!(bridge
-        .get(&format!("/?token={}", bridge.token))
-        .contains("200"));
 }

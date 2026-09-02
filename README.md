@@ -15,22 +15,42 @@ instances and exceptions, which is how a Daml file is usually navigated.
 
 ## Script results
 
-They work, in a browser rather than an editor panel.
+They work, in an editor pane rather than a webview.
 
-Invoke the **Show script results** code action on a Daml `Script` and the
-rendered transaction and table views open in your browser, updating themselves
-every time the language server re-renders. With `"code_lens": "on"` in your Zed
-settings the same thing is one click on the `Script results` lens above the
-declaration.
+Invoke the **Show script results** code action on a Daml `Script`. The result is
+written to `.daml/ide/script-results.md`; open that file once, split beside your
+source, and it updates on every click and on every edit. Zed's
+`markdown: open preview` renders the contract tables.
+
+```
+# Script: setup
+
+`test/daml/Test.daml`
+
+## Transactions
+
+    TX 0 1970-01-01T00:00:00Z (Test:18:14)
+    #0:0
+    │   consumed by: #1:0
+    └─> 'Alice' creates Main:Asset@37a33fb2…
+                with
+                  issuer = 'Alice'; owner = 'Alice'; name = "TV"
+
+## Contracts
+
+| id   | status   | issuer  | owner   | name | Alice | Bob |
+|------|----------|---------|---------|------|-------|-----|
+| #2:1 | active   | 'Alice' | 'Alice' | "TV" | S     | W   |
+```
 
 This runs outside the editor because it has to. In VS Code the extension opens
 a webview and subscribes to a `daml://` virtual resource; a Zed extension runs
 in WebAssembly, so it can neither register the client-side command the lens
 refers to nor open a panel, and Zed's LSP client does not advertise
 `window/showDocument`. So a sidecar, [`daml-ide-bridge`](crates/daml-ide-bridge),
-proxies the language server and serves the results over loopback HTTP.
+proxies the language server and writes the pane.
 
-The bridge is optional. Without it everything above still works and only script
+The bridge is optional. Without it everything else still works and only script
 results are missing. Build and install it with:
 
 ```sh
@@ -95,7 +115,7 @@ rustup target add wasm32-wasip2
 | `extra_arguments` | list of strings | `[]` | Appended to the `damlc multi-ide` command line |
 | `script_results` | bool | `true` | Run the language server behind `daml-ide-bridge` when one is available |
 | `bridge_path` | string | unset | Where to find `daml-ide-bridge`, if not on `PATH` |
-| `bridge_args` | list of strings | `[]` | Passed to the bridge, e.g. `["--no-open"]` |
+| `bridge_args` | list of strings | `[]` | Passed to the bridge, e.g. `["--log", "/tmp/bridge.log"]` |
 
 If `dpm` is not on your `PATH`, or you need the legacy `daml` assistant or an
 SDK older than 3.4, point the extension at a binary directly. This bypasses
@@ -130,7 +150,7 @@ an option, so it is simply off.
 | `editors/zed/src/lib.rs` | The only code that talks to Zed. Not automatically testable |
 | `editors/zed/languages/daml/` | tree-sitter queries |
 | `editors/zed/testdata/sample.daml` | Exercises every Daml construct; CI checks it parses and that every query compiles against it |
-| `crates/daml-ide-bridge/` | The script-results sidecar: an LSP proxy with a loopback HTTP server |
+| `crates/daml-ide-bridge/` | The script-results sidecar: an LSP proxy that writes the pane |
 
 The grammar lives in a separate repository,
 [tree-sitter-daml](https://github.com/herata/tree-sitter-daml), because it is a
@@ -166,8 +186,10 @@ the dev extension and walk this list against `testdata/sample.daml`:
       `dpm damlc multi-ide --telemetry-ignored --log-level=Warning`, or just
       the latter if no bridge is installed
 - [ ] With the bridge installed, the "Show script results" code action on a
-      `Script` opens a browser page with the transaction and table views
-- [ ] Editing the script updates that page without reloading it by hand
+      `Script` writes `.daml/ide/script-results.md`, and Zed shows a
+      notification with the path
+- [ ] With that file open, editing the script updates it without any manual
+      reload, and clicking a different script switches the pane
 
 ## License
 
